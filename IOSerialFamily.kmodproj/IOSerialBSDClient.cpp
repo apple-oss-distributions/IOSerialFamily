@@ -534,7 +534,7 @@ IOSerialBSDClient *IOSerialBSDClientGlobals::getClient(dev_t dev)
 {
     //debug(MULTI,"begin");
     unsigned int i = TTY_UNIT(dev);
-    assert(i < LastMinor);
+    assert(i < fLastMinor);
     if (i < fLastMinor) {
         return fClients[TTY_UNIT(dev)];
     }
@@ -1368,6 +1368,9 @@ iossselect(dev_t dev, int which, void *wql, struct proc *p)
 	
     error = sp->fErrno;
     if (!error) {
+        if (me->frxBlocked && TTY_QUEUESIZE(tp) < TTY_LOWWATER) {
+            me->sessionSetState(sp, PD_S_RX_EVENT, PD_S_RX_EVENT);
+        }
 		tty_lock(tp);
         error = ttyselect(tp, which, wql, p);
 		tty_unlock(tp);
@@ -2950,7 +2953,6 @@ rxFunc()
     else // we shouldn't go down this path if we've already released the port
          // (and didTerminate handles the rest of the issues anyway)
     {
-        IOLockUnlock(fTerminationLock);
         debug(FLOW, "we're killing our thread");
         // because bluetooth leaves its /dev/tty entries around
         // we need to tell the bsd side that carrier has dropped
@@ -2963,7 +2965,7 @@ rxFunc()
         // 
         // benign except for the preemption case - fixed...
         if ((fThreadState & THREAD_TX_FINISHED) && !fIsOpening &&
-            !fPreemptInProgress && fisBlueTooth)
+            !fPreemptInProgress && !fIsTerminating && fisBlueTooth)
         {
             // no transmit thread, we're about to kill the receive thread
             // tell the bsd side no more bytes (fErrno = 0)
@@ -2971,6 +2973,8 @@ rxFunc()
             // Now kill any stream that may currently be running
             sp->fErrno = 0;
 
+            IOLockUnlock(fTerminationLock);
+            
             // Enforce a zombie and unconnected state on the discipline
 #ifdef DEBUG
             debug(CONTROL, "%s\n%s\n%s", state2StringPD(sessionGetState(sp)),
@@ -2996,6 +3000,8 @@ rxFunc()
                   state2StringTermios((int)tp->t_cflag));
 #endif
 
+        } else {
+            IOLockUnlock(fTerminationLock);
         }
     }
     IOLockUnlock(fThreadLock);
@@ -3226,7 +3232,6 @@ txFunc()
     else // we shouldn't go down this path if we've already released the port 
          // (and didTerminate handles the rest of the issues anyway)
     {
-        IOLockUnlock(fTerminationLock);
         debug(FLOW, "we're killing our thread");
         // because bluetooth leaves its /dev/tty entries around
         // we need to tell the bsd side that carrier has dropped
@@ -3240,7 +3245,7 @@ txFunc()
         //
         // benign except in the preemption case - fixed...
         if ((fThreadState & THREAD_RX_FINISHED) && !fIsOpening &&
-            !fPreemptInProgress && fisBlueTooth)
+            !fPreemptInProgress && !fIsTerminating && fisBlueTooth)
         {
             // no receive thread, we're about to kill the transmit thread
             // tell the bsd side no more bytes (fErrno = 0)
@@ -3248,6 +3253,8 @@ txFunc()
             // Now kill any stream that may currently be running
             sp->fErrno = 0;
 
+            IOLockUnlock(fTerminationLock);
+            
             // Enforce a zombie and unconnected state on the discipline
 #ifdef DEBUG
             debug(CONTROL, "%s\n%s\n%s", state2StringPD(sessionGetState(sp)),
@@ -3272,6 +3279,8 @@ txFunc()
                   state2StringTTY(tp->t_state),
                   state2StringTermios((int)tp->t_cflag));
 #endif
+        } else {
+            IOLockUnlock(fTerminationLock);
         }
     }
     IOLockUnlock(fThreadLock);
